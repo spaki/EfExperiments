@@ -1,4 +1,5 @@
-﻿using EfExperiments.EfSettings;
+﻿using EfExperiments.Dtos;
+using EfExperiments.EfSettings;
 using EfExperiments.Models;
 using Microsoft.EntityFrameworkCore;
 using System.Diagnostics;
@@ -8,6 +9,8 @@ using var context = new ExperimentContext();
 SeedData(context);
 RunQueryFilterExample(context);
 RunQuerySplittingExample(context);
+RunBulkUpdateExample(context);
+RunQueryOptimizationExample(context);
 
 #region Query Filters
 
@@ -86,9 +89,167 @@ Person[] ListPeopleWithDocumentsDetaisSplittingQuery(ExperimentContext context) 
 
 #region Bulk Update
 
+void RunBulkUpdateExample(ExperimentContext context)
+{
+    Stopwatch stopwatch = new Stopwatch();
+
+    stopwatch.Start();
+    TraditionalSalaryUpdate(context);
+    stopwatch.Stop();
+    var singleQueryElapsedSeconds = stopwatch.Elapsed.TotalSeconds;
+
+    stopwatch.Reset();
+
+    stopwatch.Start();
+    BulkSalaryUpdate(context);
+    stopwatch.Stop();
+    var splittedQueryElapsedSeconds = stopwatch.Elapsed.TotalSeconds;
+
+    Console.WriteLine($"Traditional salary update took {singleQueryElapsedSeconds} seconds. Bulk salary update took {splittedQueryElapsedSeconds} seconds.");
+}
+
+void TraditionalSalaryUpdate(ExperimentContext context)
+{
+    var promoted = context
+        .Set<Person>()
+        .Where(e => e.Age > 30 && e.Age < 190)
+        .ToArray()
+        ;
+
+    foreach (var item in promoted)
+        item.Salary *= 1.1m;
+
+    context.SaveChanges();
+}
+
+void BulkSalaryUpdate(ExperimentContext context)
+{
+    var promoted = context
+        .Set<Person>()
+        .Where(e => e.Age > 30 && e.Age < 190)
+        .ExecuteUpdate(u => 
+            u.SetProperty(
+                e => e.Salary,
+                e => e.Salary * 1.1m
+            )
+        )
+        ;
+
+    context.SaveChanges();
+}
+
 #endregion
 
 #region Query Optimization
+
+void RunQueryOptimizationExample(ExperimentContext context)
+{
+    Stopwatch stopwatch = new Stopwatch();
+
+    stopwatch.Start();
+    ListPersonHeavyQuery(context);
+    stopwatch.Stop();
+    var singleQueryElapsedSeconds = stopwatch.Elapsed.TotalSeconds;
+
+    stopwatch.Reset();
+
+    stopwatch.Start();
+    ListPersonLightQuery(context);
+    stopwatch.Stop();
+    var splittedQueryElapsedSeconds = stopwatch.Elapsed.TotalSeconds;
+
+    Console.WriteLine($"Heavy person query took {singleQueryElapsedSeconds} seconds. Light person query took {splittedQueryElapsedSeconds} seconds.");
+}
+
+/// <summary>
+/// Get top 2 Person (Name, Salary) 
+/// Active
+/// With Salary > 2000
+/// With more access
+/// And access after 30 november 2022
+/// </summary>
+/// <returns></returns>
+PersonDto[] ListPersonHeavyQuery(ExperimentContext context)
+{
+    var people = context
+        .Set<Person>()
+        .IgnoreQueryFilters()
+        //.Include(e => e.Documents)
+        //.ThenInclude(e => e.Attachments)
+        .Include(e => e.AccessHistories)
+        .Include(e => e.Contacts)
+        .ToList()
+        .Select(e => new PersonDto
+        {
+            Id = e.Id,
+            Age = e.Age,
+            RecordNumber = e.RecordNumber,
+
+            Name = e.Name,
+            Salary = e.Salary,
+            Active = e.Active,
+
+            AccessHistories = e.AccessHistories.Select(ah => new AccessHistoryDto
+            {
+                Id = ah.Id,
+                DateUtc = ah.DateUtc
+            }).ToArray(),
+        })
+        .ToList()
+        .Where(x => x.Salary > 2000 && x.Active)
+        .ToList();
+
+    var orderedPeople = people.OrderByDescending(e => e.AccessHistories.Length).ToList().Take(2).ToList();
+
+    List<PersonDto> finalPeople = new List<PersonDto>();
+
+    foreach (var person in orderedPeople)
+    {
+        List<AccessHistoryDto> accessHistory = new List<AccessHistoryDto>();
+
+        var allAccessHistory = person.AccessHistories;
+
+        foreach (var access in allAccessHistory)
+        {
+            if (access.DateUtc > new DateTime(2022, 11, 30))
+            {
+                accessHistory.Add(access);
+            }
+        }
+
+        person.AccessHistories = accessHistory.ToArray();
+        finalPeople.Add(person);
+    }
+
+    return finalPeople.ToArray();
+}
+
+PersonDto[] ListPersonLightQuery(ExperimentContext context)
+{
+    var targetDate = new DateTime(2022, 11, 30);
+
+    var result = context
+        .Set<Person>()
+        .IgnoreQueryFilters()
+        .Include(e => e.AccessHistories.Where(ah => ah.DateUtc > targetDate))
+        .Where(x => x.Salary > 2000 && x.Active)
+        .OrderByDescending(x => x.AccessHistories.Count)
+        .Select(e => new PersonDto
+        {
+            Name = e.Name,
+            Salary = e.Salary,
+            Active = e.Active,
+
+            AccessHistories = e.AccessHistories.Select(ah => new AccessHistoryDto
+            {
+                DateUtc = ah.DateUtc
+            }).ToArray(),
+        })
+        .Take(2)
+        .ToArray();
+
+    return result;
+}
 
 #endregion
 
@@ -123,15 +284,8 @@ async void SeedData(ExperimentContext context)
     Console.WriteLine($"Saving data...");
 
     context.SaveChanges();
-}
 
-void SeedAccessHistory(Person person) 
-{
-    foreach (var i in GetRange(500))
-    {
-        var entity = new AccessHistory(DateTime.UtcNow);
-        person.AccessHistories.Add(entity);
-    }
+    SeedMoreAccessHistory(context);
 }
 
 void SeedContact(Person person)
@@ -160,6 +314,43 @@ void SeedAttachments(Document document)
         var entity = new Attachment($"https://www.docrepo.com/doc{i}.pptx");
         document.Attachments.Add(entity);
     }
+}
+
+void SeedAccessHistory(Person person)
+{
+    foreach (var i in GetRange(500))
+    {
+        var entity = new AccessHistory(DateTime.UtcNow);
+        person.AccessHistories.Add(entity);
+    }
+}
+
+void SeedMoreAccessHistory(ExperimentContext context)
+{ 
+    var people = context
+        .Set<Person>()
+        .IgnoreQueryFilters()
+        .Include(e => e.AccessHistories)
+        .Where(e => e.Salary > 1600)
+        .ToArray();
+
+    var random = new Random();
+
+    Parallel.ForEach(people, person => 
+    {
+        var quantity = random.Next(2, 20);
+
+        for (int i = 0; i < quantity; i++)
+        {
+            var days = random.Next(1, 30);
+            var addOrRemove = days % 2 == 0 ? 1 : -1;
+            var accessDate = new DateTime(2022, 11, 30).AddDays(days * addOrRemove);
+
+            person.AccessHistories.Add(new AccessHistory(accessDate));
+        }
+    });
+
+    context.SaveChangesAsync();
 }
 
 IEnumerable<int> GetRange(int max) => Enumerable.Range(1, max);
