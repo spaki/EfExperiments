@@ -6,11 +6,15 @@ using System.Diagnostics;
 
 using var context = new ExperimentContext();
 
+
 SeedData(context);
+
+//var person = context.Set<Person>().FirstOrDefault();
+
 RunQueryFilterExample(context);
-RunQuerySplittingExample(context);
-RunBulkUpdateExample(context);
-RunQueryOptimizationExample(context);
+//RunQuerySplittingExample(context);
+//RunBulkUpdateExample(context);
+//RunQueryOptimizationExample(context);
 
 #region Query Filters
 
@@ -178,6 +182,7 @@ PersonDto[] ListPersonHeavyQuery(ExperimentContext context)
         //.ThenInclude(e => e.Attachments)
         .Include(e => e.AccessHistories)
         .Include(e => e.Contacts)
+        //.AsNoTracking() // -> -5 seconds
         .ToList()
         .Select(e => new PersonDto
         {
@@ -231,9 +236,9 @@ PersonDto[] ListPersonLightQuery(ExperimentContext context)
     var result = context
         .Set<Person>()
         .IgnoreQueryFilters()
-        .Include(e => e.AccessHistories.Where(ah => ah.DateUtc > targetDate))
-        .Where(x => x.Salary > 2000 && x.Active)
         .OrderByDescending(x => x.AccessHistories.Count)
+        .Where(x => x.Salary > 2000 && x.Active)
+        .Include(e => e.AccessHistories.Where(ah => ah.DateUtc > targetDate))
         .Select(e => new PersonDto
         {
             Name = e.Name,
